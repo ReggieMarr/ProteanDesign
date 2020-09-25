@@ -10,6 +10,7 @@ typedef struct {
     uint8_t  speed;
 } boatCfg_t;
 
-__attribute__((weak)) extern boatCfg_t dfltBoatCfg;
+__attribute__((weak)) extern boatCfg_t dfltBoatCfg_Beneteau;
+__attribute__((weak)) extern boatCfg_t dfltBoatCfg_CNC;
 
 #endif // __TESTMTRDEFS_H_
