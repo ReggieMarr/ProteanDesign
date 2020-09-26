@@ -7,6 +7,6 @@ enum {
     TYPE_BENETEAU,
 };
 
-moduleIF_t *init_moduleIF();
+moduleIF_t *init_moduleIF(int type);
 
 #endif // __TESTMODULEIF_H_
