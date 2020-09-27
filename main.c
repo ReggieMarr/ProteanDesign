@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "boatModuleIFDefs.h"
 #include "boatModuleIF.h"
 
 int main(int argc, char *argv[]) {
@@ -16,7 +15,6 @@ int main(int argc, char *argv[]) {
     else {
         printf("Failed to init module");
     }
-
 
     return 0;
 }
