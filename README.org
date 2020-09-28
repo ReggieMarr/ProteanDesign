@@ -1,0 +1,284 @@
+# Created 2020-09-27 Sun 12:16
+#+TITLE: ReadMe
+#+AUTHOR: Reg Marr
+
+
+* Modular design
+
+** Summary
+
+This repo aims to explore ways of creating an interface which can have components swapped out and a flexible configuration.
+
+
+** Example
+
+We end up with an application that utilizes a very simple interface like so:
+#+BEGIN_SRC c
+#include <stdio.h>
+#include <stdlib.h>
+#include "boatModuleIF.h"
+
+int main(int argc, char *argv[]) {
+
+char *type = argv[1];
+int typeNum = atoi(type);
+
+moduleIF_t *IF = init_moduleIF(typeNum);
+
+if (IF) {
+    IF->printCfg(IF->ctx);
+}
+else {
+    printf("Failed to init module");
+}
+
+    return 0;
+}
+#+END_SRC
+
+We the following enumerations availible for us to select our type.
+#+BEGIN_SRC c
+enum {
+    TYPE_CNC = 0,
+    TYPE_BENETEAU,
+};
+#+END_SRC
+
+Note the config for CNC
+
+In cnc.c
+#+BEGIN_SRC c
+boatCfg_t dfltBoatCfg = {
+    .size = 10,
+    .speed= 10,
+};
+#+END_SRC
+
+We can run our executable passing our type.
+
+#+BEGIN_SRC sh :exports both
+./getBoatCfg 0
+#+END_SRC
+
+#+RESULTS:
+: speed 10 size 10
+
+Note the config for Beneatau
+
+In beneteau.c
+
+#+BEGIN_SRC c
+boatCfg_t dfltBoatCfg = {
+    .size = 5,
+    .speed= 5,
+};
+#+END_SRC
+
+#+BEGIN_SRC sh :exports both
+./getBoatCfg 1
+#+END_SRC
+
+#+RESULTS:
+: speed 5 size 5
+
+
+** Architecture
+
+#+BEGIN_SRC plantuml :file compiletime_arch.png
+!include /home/reggiemarr/Downloads/gitDownloads/C4-PlantUML/C4_Component.puml
+!include /home/reggiemarr/Downloads/gitDownloads/C4-PlantUML/C4_Container.puml
+!include /home/reggiemarr/Downloads/gitDownloads/C4-PlantUML/C4_Context.puml
+
+hide stereotype
+
+Person(getBoatCfg, "getBoatCfg")
+
+Component(boatModuleIF, "Boat Module Interface", "Adapter")
+
+Boundary(boatModBound, "Boat Module"){
+    Boundary(beneteauModBound, "Beneteau Module Interface"){
+        Component(beneteauBoatModule, "Base Module", "Module")
+        Component(beneteau, "Beneteau", "Base Component")
+    }
+    Boundary(cncModBound, "CNC Module Interface"){
+        Component(cncBoatModule, "Base Module", "Module")
+        Component(cnc, "CNC", "Base Component")
+    }
+    Component(boatModuleDefs,"Module Interface Defs", "Defs File")
+    Component(boatModuleIFDefs, "Module Defs", "Defs File")
+}
+
+Rel_D(getBoatCfg, boatModuleIF, " ")
+Rel_D(boatModuleIF, beneteauModBound, " ")
+Rel_D(boatModuleIF, cncModBound, " ")
+Rel_D(beneteauBoatModule, boatModuleIFDefs, " ")
+Rel_D(beneteau, boatModuleDefs, " ")
+Rel_D(cncBoatModule, boatModuleIFDefs, " ")
+Rel_D(cnc, boatModuleDefs, " ")
+Lay_D(cncBoatModule, cnc)
+
+#+END_SRC
+
+#+RESULTS:
+[[file:compiletime_arch.png]]
+
+
+** Background
+
+This is achieved by utlizing a couple neat C tricks:
+
+*** Opaque Pointers
+
+Opaque pointers are used to share pointers of some typedef which we want to remain private in one scope but passed as an argument in another (e.g. context pointers)
+
+This is done using the following
+
+In boatModuleIFDefs.h
+
+#+BEGIN_SRC c
+//Incomplete definition context in the header
+typedef struct moduleIF_CTX *moduleIF_CTX_t;
+#+END_SRC
+
+In boatModule.c
+
+#+BEGIN_SRC c
+//Full Definition in the source
+
+struct moduleIF_CTX {
+    uint8_t size;
+    uint8_t speed;
+};
+
+//Note callocing for this type is slightly different
+struct moduleIF_CTX * const CTX = calloc(1, sizeof(struct moduleIF_CTX));
+#+END_SRC
+
+*** Weak Symbols
+
+Weak symbols are used where we have some symbol which may or may not be defined. This is useful when we want to use a variable as a proxy for determining if some source file is included in our build (at runtime). Or when we have some sort of generic context that contains members that may be applicable in some instances and not in others.
+
+Example Given:
+
+In boatModuleDefs.h
+
+#+BEGIN_SRC c
+//Some config that may or may not be needed in creating an instance of a generic interface
+//We declare the symbol but do not define it. The weak attribute allows this to compile regardless of if its defined
+__attribute__((weak)) extern boatCfg_t dfltBoatCfg;
+#+END_SRC
+
+In cnc.c
+
+#+BEGIN_SRC c
+#include "boatModuleDefs.h"
+
+//We would define it in some file
+boatCfg_t dfltBoatCfg = {
+    .size = 10,
+    .speed= 10,
+};
+#+END_SRC
+
+In boatModule.c
+
+#+BEGIN_SRC c
+//If we did not compile/link with cnc.c then this global would not be defined and
+//would have no memory address allocated for it.
+if (&dfltBoatCfg) {
+    CTX->size = dfltBoatCfg.size;
+    CTX->speed = dfltBoatCfg.speed;
+}
+#+END_SRC
+
+*** Object file merging and symbol renaming
+
+One of the core tennants of software engineering is developing code that can be reused and swapping out base components. While we can easily swap out our core component (which defines our dfltBoatCfg) we would run into issues if we wanted to compile multiple base components into our project in the form of symbol collisions. To avoid this we employ a couple techniques.
+
+1. Object file Merging
+
+   First use the gnu utility, ld to merge each of our base components with our module like so:
+
+   #+BEGIN_SRC sh
+   ld -r cnc.o boatModule.o -o boatModule_Cnc.o
+
+   ld -r beneteau.o boatModule.o -o boatModule_Beneteau.o
+   #+END_SRC
+
+While created two new object files these will still encounter symbol collisions for any symbols with global scope
+
+As we can see with the following objdumps:
+
+#+BEGIN_SRC sh :exports both
+objdump -t boatModule.o
+#+END_SRC
+
+#+RESULTS:
+|               |        |        |                       |                  |                 |
+| boatModule.o: | file   | format | elf64-x86-64          |                  |                 |
+|               |        |        |                       |                  |                 |
+|        SYMBOL | TABLE: |        |                       |                  |                 |
+|             0 | l      | df     | *ABS*                 |                0 | boatModule.c    |
+|             0 | l      | d      | .text                 |                0 | .text           |
+|             0 | l      | d      | .data                 |                0 | .data           |
+|             0 | l      | d      | .bss                  |                0 | .bss            |
+|             0 | l      | d      | .rodata               |                0 | .rodata         |
+|             0 | l      | F      | .text                 |               37 | printCfg        |
+|             0 | l      | d      | .note.GNU-stack       |                0 | .note.GNU-stack |
+|             0 | l      | d      | .eh_frame             |                0 | .eh_frame       |
+|             0 | l      | d      | .comment              |                0 | .comment        |
+|             0 | *UND*  | 0      | _GLOBAL_OFFSET_TABLE_ |                  |                 |
+|             0 | *UND*  | 0      | printf                |                  |                 |
+|            37 | g      | F      | .text                 | 000000000000007c | init_moduleIF   |
+|             0 | *UND*  | 0      | calloc                |                  |                 |
+|             0 | w      | *UND*  | 0                     |      dfltBoatCfg |                 |
+|               |        |        |                       |                  |                 |
+|               |        |        |                       |                  |                 |
+
+2. Symbol redefinition
+    To fix this we can use the objcopy utility to rename symbols like so:
+    #+BEGIN_SRC sh
+    objcopy --redefine-sym printCfg=printCfg_Beneteau boatModule_Beneteau.o
+    objcopy --redefine-sym init_moduleIF=init_moduleIF_Beneteau boatModule_Beneteau.o
+    objcopy --redefine-sym dfltBoatCfg=dfltBoatCfg_Beneteau boatModule_Beneteau.o
+    #+END_SRC
+   
+    #+BEGIN_SRC sh :exports both
+    objdump -t boatModule_Beneteau.o
+    #+END_SRC
+
+    #+RESULTS:
+    |                        |        |        |                       |                  |                        |
+    | boatModule_Beneteau.o: | file   | format | elf64-x86-64          |                  |                        |
+    |                        |        |        |                       |                  |                        |
+    |                 SYMBOL | TABLE: |        |                       |                  |                        |
+    |                      0 | l      | d      | .text                 |                0 | .text                  |
+    |                      0 | l      | d      | .rodata               |                0 | .rodata                |
+    |                      0 | l      | d      | .eh_frame             |                0 | .eh_frame              |
+    |                      0 | l      | d      | .data                 |                0 | .data                  |
+    |                      0 | l      | d      | .bss                  |                0 | .bss                   |
+    |                      0 | l      | d      | .comment              |                0 | .comment               |
+    |                      0 | l      | d      | .note.GNU-stack       |                0 | .note.GNU-stack        |
+    |                      0 | l      | df     | *ABS*                 |                0 | beneteau.c             |
+    |                      0 | l      | df     | *ABS*                 |                0 | boatModule.c           |
+    |                      0 | l      | F      | .text                 |               37 | printCfg_Beneteau      |
+    |                      0 | *UND*  | 0      | printf                |                  |                        |
+    |                      0 | *UND*  | 0      | calloc                |                  |                        |
+    |                      0 | w      | O      | .data                 |                2 | dfltBoatCfg_Beneteau   |
+    |                     37 | g      | F      | .text                 | 000000000000007c | init_moduleIF_Beneteau |
+    |                      0 | *UND*  | 0      | _GLOBAL_OFFSET_TABLE_ |                  |                        |
+    |                        |        |        |                       |                  |                        |
+    |                        |        |        |                       |                  |                        |
+
+    #+BEGIN_SRC sh
+    objcopy --redefine-sym printCfg=printCfg_CNC boatModule_Cnc.o
+    objcopy --redefine-sym init_moduleIF=init_moduleIF_CNC boatModule_Cnc.o
+    objcopy --redefine-sym dfltBoatCfg=dfltBoatCfg_CNC boatModule_Cnc.o
+    #+END_SRC
+
+    #+BEGIN_SRC sh :exports both
+    objdump -t boatModule_Cnc.o
+    #+END_SRC
+
+    This results in two object files representing unique instances of our base module.
+    These can then be linked together such that we can create a single executable capable of instantiating each module.
